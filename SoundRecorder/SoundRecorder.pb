@@ -70,10 +70,13 @@ Structure cSoundRec
   *IsDefault
   *SetFile
   *Config
+  *Monitor
   *Start
   *Stop
   *Free
 EndStructure 
+
+Prototype EffectsCB(*input,numframes,time)
 
 Structure SoundRec 
   *vt.cSoundRec
@@ -82,6 +85,7 @@ Structure SoundRec
   bRecord.i 
   *pbc 
   file.s 
+  List Effects.i()
   Map CaptureDevices.devices(0)  
   Map PlayBackDevices.devices(0) 
 EndStructure   
@@ -122,6 +126,18 @@ Procedure StartSoundRecorder(SoundRec)
   !ma_device_start(p_device);
   
 EndProcedure  
+
+Procedure MonitorSoundRecorder(SoundRec,*EffectsCB=0) 
+  Protected *sound.SoundRec = SoundRec
+  Protected *device = *sound\device 
+  If *EffectsCB <> 0 
+    AddElement(*sound\Effects()) 
+    *sound\Effects() = *EffectsCB 
+  EndIf 
+  !ma_device_start(p_device);
+  
+EndProcedure 
+
 
 Procedure StopSoundRecorder(SoundRec,samplerate=44100) 
   
@@ -200,16 +216,23 @@ Procedure StopSoundRecorder(SoundRec,samplerate=44100)
 EndProcedure
 
 ProcedureC data_callback(*Device,*Output,*Input,frameCount)
-  Protected amount,*sound.SoundRec 
-  
+  Protected amount,format,channels,*sound.SoundRec 
+  Protected *fx.EffectsCB 
   If frameCount  
     !ma_device *pdevice = p_device; 
     !v_amount = v_framecount * ma_get_bytes_per_frame(pdevice->capture.format, pdevice->capture.channels);
     !p_sound = pdevice->pUserData; 
-        
+    !v_format = pdevice->capture.format; 
+    !v_channels = pdevice->capture.channels;
     If amount <> 0  
       If (*input And *output)  
-        CopyMemory(*Input,*Output,amount)
+        If amount > 4 
+        ForEach *sound\Effects() 
+          *fx = *sound\Effects() 
+          *fx(*input,frameCount,ElapsedMilliseconds()/1000.0)
+        Next  
+        EndIf 
+        CopyMemory(*input,*Output,amount)
       EndIf 
       If (*input And *sound\bRecord)
         If *sound\WAVBuffer = 0 
@@ -402,7 +425,8 @@ ProcedureDLL InitSoundRecorder()
   *sound\vt\EnumDevices = @EnumSoundCaptureDevices() 
   *sound\vt\NextDevice = @NextSoundCaptureDevice() 
   *sound\vt\IsDefault = @IsDefault() 
-  *sound\vt\SetFile = @SetRecordingFile() 
+  *sound\vt\SetFile = @SetRecordingFile()
+  *sound\vt\Monitor = @MonitorSoundRecorder() 
   *sound\vt\Start = @StartSoundRecorder()
   *sound\vt\Stop = @StopSoundRecorder() 
   *sound\pbc = @data_callback() 
@@ -414,6 +438,55 @@ EndProcedure
 
 CompilerIf #TestSound 
   
+  Procedure.f CubicAmplifier(input.f)
+    Protected  output.f, temp.f
+    If input < 0.0
+       temp = input + 1.0
+       output = (temp * temp * temp) - 1.0
+    Else
+       temp = input - 1.0
+       output = (temp * temp * temp) + 1.0
+    EndIf    
+          
+    ProcedureReturn output;
+  EndProcedure 
+  
+  Macro FUZZ(x)
+    CubicAmplifier(CubicAmplifier(CubicAmplifier(x)))
+  EndMacro
+  
+  Procedure fuzzCallback(*input,numframes,timeSeconds.d)
+    
+    Protected *pfIn.float = *input 
+    Protected i
+                 
+    If *input <> 0
+      While i < numframes
+        *pfIn\f = FUZZ(*pfIn\f)   
+        *pfin + 4
+        i + 4
+      Wend 
+    EndIf 
+    
+  EndProcedure 
+  
+  Procedure RMSSignal(*input,numframes,timeseconds.d) 
+    Protected rms.f,db.f, *pfIn.float = *input 
+    If *input <> 0
+      While i < numframes
+        rms + (*pfIn\f * *pfIn\f)   
+        *pfin + 4
+        i + 4
+      Wend 
+    EndIf 
+    
+    DB = 20 * Log10(Sqr(rms/numframes))
+    
+    PrintN("Peek RMS DB " + StrF(DB,2))  
+    
+  EndProcedure  
+  
+    
 InitSound()
 
 Interface iSoundRecorder 
@@ -422,6 +495,7 @@ Interface iSoundRecorder
   IsDefault(device.s)
   SetFile(filename.s)
   Config(device.s,format=#ma_format_s16,sampleRate=44100,mode=#ma_device_type_capture) 
+  Monitor(*EffectsCB=0)
   Start()
   Stop(samplerate=44100)
   Free()
@@ -446,11 +520,19 @@ Until device = ""
 
 PrintN("Init Recorder") 
 
-soundRec\Config("",#ma_format_s16,44100,#ma_device_type_duplex)       ;record on default input and playback 
+soundRec\Config("",#ma_format_f32,44100,#ma_device_type_duplex)       ;record on default input and playback 
 ;soundRec\Config(device,#ma_format_s16,44100)                          ;record on selected input 
 ;soundRec\Config(device,#ma_format_s16,44100,#ma_device_type_loopback)  ;record on whats being currently played on speaker
 
+PrintN("Monitoring Press Enter  to record") 
+
+soundRec\Monitor(@fuzzCallback()) ;distort with cubic amp
+soundRec\Monitor(@RMSSignal())    ;adds to call back chain note this isn't ideal as it's blocking  
+
+Input()  
+
 PrintN("Press enter tostart recording") 
+
 
 soundRec\Start()
 
@@ -470,6 +552,8 @@ Input();
 soundRec\Free()
 
 PrintN("free") 
+
+Input();
 
 CloseConsole()
   
